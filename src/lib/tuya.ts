@@ -4523,6 +4523,7 @@ const tuyaModernExtend = {
             queryIntervalSeconds?: number;
             forceTimeUpdates?: true;
             timeStart?: "2000" | "1970";
+            timeSyncDisableDefaultResponse?: true | ((device: Zh.Device) => boolean);
         } = {},
     ): ModernExtend {
         const {
@@ -4535,6 +4536,7 @@ const tuyaModernExtend = {
             // Every hour when a message is received the time will be updated.
             forceTimeUpdates = false,
             timeStart = "off",
+            timeSyncDisableDefaultResponse = false,
         } = args;
 
         const fzConverter: Fz.Converter<
@@ -4585,8 +4587,12 @@ const tuyaModernExtend = {
                         payloadSize: 8,
                         payload: [...convertDecimalValueTo4ByteHexArray(utcTime), ...convertDecimalValueTo4ByteHexArray(localTime)],
                     };
+                    const disableDefaultResponse =
+                        typeof timeSyncDisableDefaultResponse === "function"
+                            ? timeSyncDisableDefaultResponse(msg.device)
+                            : timeSyncDisableDefaultResponse;
                     msg.endpoint
-                        .command("manuSpecificTuya", "mcuSyncTime", payload, {})
+                        .command("manuSpecificTuya", "mcuSyncTime", payload, disableDefaultResponse ? {disableDefaultResponse: true} : {})
                         .catch((error) => logger.error(`Failed to sync time with '${msg.device.ieeeAddr}' (${error})`, NS));
                 } else if (msg.type === "commandMcuGatewayConnectionStatus") {
                     // "payload" can have the following values:

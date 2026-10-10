@@ -137,7 +137,14 @@ export const definitions: DefinitionWithExtend[] = [
         description: "Temperature and humidity sensor with clock",
         fromZigbee: [legacy.fz.nous_lcd_temperature_humidity_sensor, fz.ignore_tuya_set_time],
         toZigbee: [legacy.tz.nous_lcd_temperature_humidity_sensor],
-        extend: [tuya.modernExtend.tuyaBase({forceTimeUpdates: true, timeStart: "1970"})],
+        extend: [
+            tuya.modernExtend.tuyaBase({
+                forceTimeUpdates: true,
+                timeStart: "1970",
+                // TH01Z applies the time but does not send a ZCL default response.
+                timeSyncDisableDefaultResponse: (device) => device.manufacturerName === "_TZE200_locansqn",
+            }),
+        ],
         configure: async (device, coordinatorEndpoint) => {
             const endpoint = device.getEndpoint(1);
             await reporting.bind(endpoint, coordinatorEndpoint, ["genBasic"]);
