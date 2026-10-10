@@ -37,7 +37,7 @@ describe("lib/tuya", () => {
             return {device, endpoint, convert};
         }
 
-        it.each([undefined, true, () => true, () => false] as const)("selects the time response policy %s", (policy) => {
+        it.each([undefined, true, (): boolean => true, (): boolean => false] as const)("selects the time response policy %s", (policy) => {
             const {endpoint, convert} = setup({timeSyncDisableDefaultResponse: policy});
             convert();
             const disabled = typeof policy === "function" ? policy() : policy;
