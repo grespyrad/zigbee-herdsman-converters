@@ -1,12 +1,115 @@
-import {describe, expect, it, vi} from "vitest";
+import {afterEach, beforeEach, describe, expect, it, vi} from "vitest";
 import {Zcl} from "zigbee-herdsman";
 import {findByDevice, type Tz} from "../src/index";
 import * as legacy from "../src/lib/legacy";
+import {logger} from "../src/lib/logger";
+import * as globalStore from "../src/lib/store";
 import * as tuya from "../src/lib/tuya";
-import type {Definition, Fz, KeyValueAny} from "../src/lib/types";
+import type {Definition, Fz, KeyValueAny, Zh} from "../src/lib/types";
 import {mockDevice} from "./utils";
 
 describe("lib/tuya", () => {
+    describe("tuyaBase time synchronization", () => {
+        beforeEach(() => {
+            vi.useFakeTimers();
+            vi.setSystemTime(new Date("2026-10-10T09:18:00Z"));
+            vi.spyOn(Date.prototype, "getTimezoneOffset").mockReturnValue(-180);
+            globalStore.clear();
+        });
+
+        afterEach(() => {
+            vi.useRealTimers();
+            globalStore.clear();
+        });
+
+        function setup(args: Parameters<typeof tuya.modernExtend.tuyaBase>[0] = {}) {
+            const device = mockDevice({modelID: "TS0601", manufacturerName: "test", endpoints: [{ID: 1}]});
+            const endpoint = device.getEndpoint(1);
+            const converter = tuya.modernExtend.tuyaBase({timeStart: "1970", ...args}).fromZigbee[0];
+            const convert = (type = "commandMcuSyncTime", options = {}) =>
+                converter.convert(
+                    {} as Definition,
+                    {device, endpoint, type} as Fz.Message<"manuSpecificTuya", undefined, "commandMcuSyncTime">,
+                    () => {},
+                    options,
+                    {device, state: {}, deviceExposesChanged: () => {}},
+                );
+            return {device, endpoint, convert};
+        }
+
+        it.each([undefined, true, (): boolean => true, (): boolean => false] as const)("selects the time response policy %s", (policy) => {
+            const {endpoint, convert} = setup({timeSyncDisableDefaultResponse: policy});
+            convert();
+            const disabled = typeof policy === "function" ? policy() : policy;
+            expect(endpoint.command).toHaveBeenCalledWith(
+                "manuSpecificTuya",
+                "mcuSyncTime",
+                expect.objectContaining({payloadSize: 8}),
+                disabled ? {disableDefaultResponse: true} : {},
+            );
+        });
+
+        it.each(["1970", "2000"] as const)("preserves UTC and local time with the %s epoch", (timeStart) => {
+            const {endpoint, convert} = setup({timeStart, timeSyncDisableDefaultResponse: true});
+            convert();
+            const offset = timeStart === "2000" ? Date.UTC(2000, 0, 1) : 0;
+            const utc = (Date.now() - offset) / 1000;
+            const expected = Buffer.alloc(8);
+            expected.writeUInt32BE(utc, 0);
+            expected.writeUInt32BE(utc + 3 * 3600, 4);
+            expect(endpoint.command).toHaveBeenCalledWith(
+                "manuSpecificTuya",
+                "mcuSyncTime",
+                {payloadSize: 8, payload: [...expected]},
+                {disableDefaultResponse: true},
+            );
+        });
+
+        it("evaluates the policy for each sending device", () => {
+            const policy = vi.fn((device: Zh.Device) => device.manufacturerName === "test");
+            const {device, endpoint, convert} = setup({timeSyncDisableDefaultResponse: policy});
+            convert();
+            device.manufacturerName = "other";
+            convert();
+            expect(policy).toHaveBeenCalledTimes(2);
+            expect(policy).toHaveBeenLastCalledWith(device);
+            expect(endpoint.command).toHaveBeenLastCalledWith("manuSpecificTuya", "mcuSyncTime", expect.anything(), {});
+        });
+
+        it("applies the policy to hourly forced updates without changing the interval", () => {
+            const {endpoint, convert} = setup({forceTimeUpdates: true, timeSyncDisableDefaultResponse: true});
+            convert("commandDataReport");
+            convert("commandDataReport");
+            expect(endpoint.command).toHaveBeenCalledTimes(1);
+            vi.advanceTimersByTime(3600 * 1000 + 1);
+            convert("commandDataReport");
+            expect(endpoint.command).toHaveBeenCalledTimes(2);
+            expect(endpoint.command).toHaveBeenLastCalledWith("manuSpecificTuya", "mcuSyncTime", expect.anything(), {disableDefaultResponse: true});
+        });
+
+        it("honors time_start off", () => {
+            const {endpoint, convert} = setup({forceTimeUpdates: true, timeSyncDisableDefaultResponse: true});
+            convert("commandMcuSyncTime", {time_start: "off"});
+            expect(endpoint.command).not.toHaveBeenCalled();
+        });
+
+        it("keeps the gateway status response policy", () => {
+            const {endpoint, convert} = setup({timeSyncDisableDefaultResponse: true});
+            convert("commandMcuGatewayConnectionStatus");
+            expect(endpoint.command).toHaveBeenCalledWith("manuSpecificTuya", "mcuGatewayConnectionStatus", {payloadSize: 1, payload: 1}, {});
+        });
+
+        it("still logs transport failures", async () => {
+            const {device, endpoint, convert} = setup({timeSyncDisableDefaultResponse: true});
+            const error = new Error("Delivery failed");
+            vi.spyOn(endpoint, "command").mockRejectedValueOnce(error);
+            const log = vi.spyOn(logger, "error");
+            convert();
+            await Promise.resolve();
+            expect(log).toHaveBeenCalledWith(`Failed to sync time with '${device.ieeeAddr}' (${error})`, "zhc:tuya");
+        });
+    });
+
     describe("tuyaWeatherForecast", () => {
         it("uses forecast fields 1 through 3 and includes their humidity in the payload", async () => {
             const {toZigbee} = tuya.modernExtend.tuyaWeatherForecast();
